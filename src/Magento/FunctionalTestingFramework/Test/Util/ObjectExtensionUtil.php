@@ -153,8 +153,16 @@ class ObjectExtensionUtil
         // Get the hooks for each Test merge changes from the child hooks to the parent hooks into the child hooks
         foreach ($testHooks as $key => $hook) {
             if (array_key_exists($key, $parentHooks)) {
+                $parentActions = $parentHooks[$key]->getUnresolvedActions();
+
+                // Remove the rollback actions added internally from parent after hook
+                if ($key == 'after') {
+                    array_pop($parentActions);
+                    array_pop($parentActions);
+                }
+
                 $testHookActions = array_merge(
-                    $parentHooks[$key]->getUnresolvedActions(),
+                    $parentActions,
                     $testHooks[$key]->getUnresolvedActions()
                 );
                 $cleanedTestHookActions = $this->processRemoveActions($testHookActions);
