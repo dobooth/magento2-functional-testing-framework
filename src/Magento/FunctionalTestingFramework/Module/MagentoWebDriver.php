@@ -21,13 +21,14 @@ use Magento\FunctionalTestingFramework\DataTransport\Auth\WebApiAuth;
 use Magento\FunctionalTestingFramework\DataTransport\Auth\Tfa\OTP;
 use Magento\FunctionalTestingFramework\DataTransport\Protocol\CurlInterface;
 use Magento\FunctionalTestingFramework\DataGenerator\Handlers\CredentialStore;
+use Magento\FunctionalTestingFramework\Util\Path\FilePathFormatter;
 use Magento\FunctionalTestingFramework\Util\Path\UrlFormatter;
 use Magento\FunctionalTestingFramework\Util\ConfigSanitizerUtil;
 use Yandex\Allure\Adapter\AllureException;
 use Magento\FunctionalTestingFramework\DataTransport\Protocol\CurlTransport;
 use Yandex\Allure\Adapter\Support\AttachmentSupport;
 use Magento\FunctionalTestingFramework\Exceptions\TestFrameworkException;
-use Magento\FunctionalTestingFramework\DataGenerator\Handlers\PersistedObjectHandler;
+use Symfony\Component\Finder\Finder;
 
 /**
  * MagentoWebDriver module provides common Magento web actions through Selenium WebDriver.
@@ -60,6 +61,28 @@ class MagentoWebDriver extends WebDriver
 
     const MAGENTO_CRON_INTERVAL = 60;
     const MAGENTO_CRON_COMMAND = 'cron:run';
+    const RELATIVE_BACKUP_PATH = 'tests/_backups/';
+    const MAGENTO_DEFAULT_BACKUP_PATH = 'var/backups/';
+
+    /**
+     * Backup patterns
+     *
+     * @var array
+     */
+    protected $backupPatterns = [
+        'db' => '*_db.sql',
+        'media' => '*_media.tgz'
+    ];
+
+    /**
+     * Rollback options
+     *
+     * @var array
+     */
+    protected $rollbackOptions = [
+        'db' => '-d',
+        'media' => '-m'
+    ];
 
     /**
      * List of known magento loading masks by selector
@@ -140,12 +163,17 @@ class MagentoWebDriver extends WebDriver
      * Sanitizes config, then initializes using parent.
      *
      * @return void
+     * @throws TestFrameworkException
      */
     public function _initialize()
     {
         $this->config = ConfigSanitizerUtil::sanitizeWebDriverConfig($this->config);
         parent::_initialize();
         $this->cleanJsError();
+        // Load super admin auth token in DB before backing up
+        WebApiAuth::getAdminToken();
+        $this->nonGreedyBackup('db');
+        $this->nonGreedyBackup('media');
     }
 
     /**
@@ -1048,5 +1076,124 @@ class MagentoWebDriver extends WebDriver
         }
 
         $this->codeceptPause();
+    }
+
+    //TODO separate console command to create and delete backup files?
+
+    /**
+     * Backup Magento DB
+     *
+     * @param string $type
+     * @param string $name
+     * @return string
+     * @throws TestFrameworkException
+     */
+    public function nonGreedyBackup($type, $name = 'init')
+    {
+        $filename = $this->getBackupFileFromFileSystem($name . '_' . $this->backupPatterns[$type]);
+        if (!$filename) {
+            try {
+                $this->magentoCLI("config:set system/backup/functionality_enabled 1", 60);
+                $this->magentoCLI("setup:backup --" . $type, 120);
+            } catch (TestFrameworkException $e) {
+                throw new TestFrameworkException("Failed to create Magento {$type} backup.\n" . $e->getMessage());
+            }
+
+            $filename = $this->getNewestMagentoBackupFileFromFileSystem($this->backupPatterns[$type]);
+            if ($filename) {
+                $srcDir = FilePathFormatter::format(MAGENTO_BP) . self::MAGENTO_DEFAULT_BACKUP_PATH;
+                $srcFile = $srcDir . $filename;
+                $dstDir = FilePathFormatter::format(TESTS_BP) . self::RELATIVE_BACKUP_PATH;
+                if (!file_exists($dstDir)) {
+                    mkdir($dstDir);
+                }
+                $filename = $name . '_' . $filename;
+                $dstFile = $dstDir . $filename;
+                rename($srcFile, $dstFile);
+            } else {
+                throw new TestFrameworkException("Failed to create Magento {$type} backup.");
+            }
+        }
+
+        return $filename;
+    }
+
+    /**
+     * Rollback Magento DB
+     *
+     * @param string $type
+     * @param string $name
+     * @return string
+     * @throws TestFrameworkException
+     */
+    public function rollback($type, $name = 'init')
+    {
+        $filename = $this->getBackupFileFromFileSystem($name . '_' . $this->backupPatterns[$type]);
+        if (!$filename) {
+            throw new TestFrameworkException("Failed to rollback Magento {$type}: No backup file found.\n");
+        }
+
+        $srcFile = FilePathFormatter::format(TESTS_BP) . self::RELATIVE_BACKUP_PATH . $filename;
+        $dstDir = FilePathFormatter::format(MAGENTO_BP) . self::MAGENTO_DEFAULT_BACKUP_PATH;
+        if (!file_exists($dstDir)) {
+            mkdir($dstDir);
+        }
+        $filename = ltrim($filename, $name . '_');
+        $dstFile = $dstDir . $filename;
+        copy($srcFile, $dstFile);
+        try {
+            return $this->magentoCLI(
+                "setup:rollback " . $this->rollbackOptions[$type] . " {$filename} -n", 180
+            );
+        } catch (TestFrameworkException $e) {
+            unlink($dstFile);
+            throw new TestFrameworkException("Failed to rollback Magento {$type}: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Return Magento backup file name from file system
+     *
+     * @param string $pattern
+     * @return string|null
+     * @throws TestFrameworkException
+     */
+    private function getBackupFileFromFileSystem($pattern)
+    {
+        $result = null;
+        $finder = new Finder();
+        if (file_exists(FilePathFormatter::format(TESTS_BP) . self::RELATIVE_BACKUP_PATH)) {
+            $finder->files()->in(FilePathFormatter::format(TESTS_BP) . self::RELATIVE_BACKUP_PATH)
+                ->name($pattern);
+            $files = iterator_to_array($finder, false);
+            if (!empty($files)) {
+                $result = basename($files[0]);
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Return latest Magento backup file name from file system
+     *
+     * @param string $pattern
+     * @return string|null
+     * @throws TestFrameworkException
+     */
+    private function getNewestMagentoBackupFileFromFileSystem($pattern)
+    {
+        $result = null;
+        $finder = new Finder();
+        if (file_exists(FilePathFormatter::format(MAGENTO_BP) . self::MAGENTO_DEFAULT_BACKUP_PATH)) {
+            $finder->files()->in(FilePathFormatter::format(MAGENTO_BP) . self::MAGENTO_DEFAULT_BACKUP_PATH)
+                ->name($pattern)->sortByAccessedTime()->reverseSorting();
+            $files = iterator_to_array($finder, false);
+            if (!empty($files)) {
+                $result = basename($files[0]);
+            }
+        }
+
+        return $result;
     }
 }

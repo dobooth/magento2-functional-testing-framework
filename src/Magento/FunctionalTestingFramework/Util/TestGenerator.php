@@ -260,10 +260,17 @@ class TestGenerator
 
         $className = $testObject->getCodeceptionName();
         try {
+            $afterHook = false;
             if (!$testObject->isSkipped() || MftfApplicationConfig::getConfig()->allowSkipped()) {
+                if (isset($testObject->getHooks()['after'])) {
+                    $afterHook = true;
+                }
                 $hookPhp = $this->generateHooksPhp($testObject->getHooks());
             } else {
                 $hookPhp = null;
+            }
+            if ($hookPhp && !$afterHook) {
+                $hookPhp .= $this->generateDefaultAfterMethod();
             }
             $testsPhp = $this->generateTestPhp($testObject);
         } catch (TestReferenceException $e) {
@@ -277,6 +284,11 @@ class TestGenerator
         $cestPhp .= $classAnnotationsPhp;
         $cestPhp .= sprintf("class %s\n", $className);
         $cestPhp .= "{\n";
+        if (getenv('ROLLBACK') === 'PER_TEST') {
+            $cestPhp .= $this->generateRollbackVar(true);
+        } else {
+            $cestPhp .= $this->generateRollbackVar(false);
+        }
         $cestPhp .= $this->generateInjectMethod();
         $cestPhp .= $hookPhp;
         $cestPhp .= $testsPhp;
@@ -312,6 +324,51 @@ class TestGenerator
         $mustacheData['arguments'] = $arguments;
 
         return $mustacheEngine->render('TestInjectMethod', $mustacheData);
+    }
+
+    /**
+     * @return string
+     */
+    private function generateDefaultAfterMethod()
+    {
+        $hooks = "\t/**\n";
+        $hooks .= "\t * @param AcceptanceTester \$I\n";
+        $hooks .= "\t * @throws \\Exception\n";
+        $hooks .= "\t */\n";
+        $hooks .= "\tpublic function _after(AcceptanceTester \$I)\n";
+        $hooks .= "\t{\n";
+        $hooks .= $this->generateRollbackSteps();
+        $hooks .= "\t}\n\n";
+        return $hooks;
+    }
+
+    /**
+     * @return string
+     */
+    private function generateRollbackSteps()
+    {
+        $steps = "\t\tif (\$this->rollback) {\n";
+        $steps .= "\t\t\t\$I->rollback(\"media\");\n";
+        $steps .= "\t\t\t\$I->rollback(\"db\");\n";
+        $steps .= "\t\t}\n";
+        return $steps;
+    }
+
+    /**
+     * @param bool $value
+     * @return string
+     */
+    private function generateRollbackVar($value)
+    {
+        $steps = "\t/**\n";
+        $steps .= "\t @var bool\n";
+        $steps .= "\t */\n";
+        if ($value) {
+            $steps .= "\tprivate \$rollback = true;\n\n";
+        } else {
+            $steps .= "\tprivate \$rollback = false;\n\n";
+        }
+        return $steps;
     }
 
     /**
@@ -1442,10 +1499,10 @@ class TestGenerator
                     $testSteps .= $dateGenerateCode;
                     break;
                 case "pause":
-                    $pauseAttr =  $actionObject->getCustomActionAttributes(
-                        ActionObject::PAUSE_ACTION_INTERNAL_ATTRIBUTE
-                    );
-                    if ($pauseAttr) {
+                    if (isset($customActionAttributes[ActionObject::PAUSE_ACTION_INTERNAL_ATTRIBUTE])) {
+                        $pauseAttr = $customActionAttributes[ActionObject::PAUSE_ACTION_INTERNAL_ATTRIBUTE];
+                    }
+                    if (isset($pauseAttr) && $pauseAttr) {
                         $testSteps .= sprintf("\t\t$%s->%s(%s);", $actor, $actionObject->getType(), 'true');
                     } else {
                         $testSteps .= sprintf("\t\t$%s->%s();", $actor, $actionObject->getType());
@@ -1727,7 +1784,13 @@ class TestGenerator
 
             $hooks .= sprintf("\tpublic function _{$type}(%s)\n", $dependencies);
             $hooks .= "\t{\n";
+            if ($type == 'failed' && getenv('ROLLBACK') === 'ON_FAILURE') {
+                $hooks .= "\t\t\$this->rollback = true;\n";
+            }
             $hooks .= $steps;
+            if ($type == 'after') {
+                $hooks .= $this->generateRollbackSteps();
+            }
             $hooks .= "\t}\n\n";
         }
 
