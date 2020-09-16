@@ -10,5 +10,6 @@ jobs:
     steps:
       - checkout
       #- run: docker-php-ext-install intl
+      - run: echo 'memory_limit = -1' >> /usr/local/etc/php/conf.d/docker-php-memlimit.ini
       - run: composer install --prefer-dist --no-progress --no-suggest
       - run: vendor/bin/phpunit --configuration dev/tests/phpunit.xml --testsuite unit --coverage-clover clover.xml
