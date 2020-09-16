@@ -6,9 +6,9 @@ version: 2
 jobs:
   build:
     docker:
-      - image: cimg/php:7.4
+      - image: circleci/php:7.4-apache-browsers
     steps:
       - checkout
-      - run: docker-php-ext-install intl
+      #- run: docker-php-ext-install intl
       - run: composer install --prefer-dist --no-progress --no-suggest
       - run: vendor/bin/phpunit --configuration dev/tests/phpunit.xml --testsuite unit --coverage-clover clover.xml
