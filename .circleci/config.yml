@@ -9,6 +9,6 @@ jobs:
       - image: cimg/php:7.4
     steps:
       - checkout
-      - run: composer install --prefer-dist --no-progress --no-suggest
       - run: docker-php-ext-install intl
+      - run: composer install --prefer-dist --no-progress --no-suggest
       - run: vendor/bin/phpunit --configuration dev/tests/phpunit.xml --testsuite unit --coverage-clover clover.xml
